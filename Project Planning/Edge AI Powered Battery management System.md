@@ -1,5 +1,6 @@
 
 # What are we proposing
+
 Develop an intelligent Battery Management System (BMS) that not only protects lithium-ion batteries but also predicts battery health using Edge AI while providing uninterrupted power through an integrated UPS system.
 
 Unlike traditional BMS solutions, the proposed system combines battery monitoring, predictive analytics, IoT connectivity and intelligent power management into a single embedded platform.
@@ -129,7 +130,7 @@ Critical for safety and battery health of robots and rovers
 - Flutter Dashboard
 - Wi-Fi/BLE
 - SD Card Logging
-- OTA Updates
+- OTA Updates//
 - Fault Detection
 - Battery Health Prediction
 # Deliverables

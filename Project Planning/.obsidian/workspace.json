@@ -25,12 +25,14 @@
             "id": "d463ce788d707e3f",
             "type": "leaf",
             "state": {
-              "type": "excalidraw",
+              "type": "markdown",
               "state": {
-                "file": "Excalidraw/Edge AI System Flow.excalidraw.md"
+                "file": "Edge AI Powered Battery management System.md",
+                "mode": "source",
+                "source": false
               },
-              "icon": "excalidraw-icon",
-              "title": "Edge AI System Flow.excalidraw"
+              "icon": "lucide-file",
+              "title": "Edge AI Powered Battery management System"
             }
           }
         ],
@@ -196,8 +198,8 @@
   },
   "active": "d463ce788d707e3f",
   "lastOpenFiles": [
-    "Edge AI Powered Battery management System.md",
     "Excalidraw/Edge AI System Flow.excalidraw.md",
+    "Edge AI Powered Battery management System.md",
     "Excalidraw"
   ]
 }
