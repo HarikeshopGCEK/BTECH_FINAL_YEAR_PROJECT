@@ -1,19 +1,29 @@
 // ============================================================
-// 3S Li-Ion / LiPo Battery Pack – Per-Cell Voltage Monitor
-// Platform : ESP32 (12-bit ADC, 3.3 V reference)
+// 3S Li-Ion / LiPo Battery Pack – Voltage & Current Monitor
+// Platform       : ESP32 DevKit V1 (12-bit ADC, 3.3 V reference)
+// Current Sensor : INA226 (I2C)
 //
-// Wiring (voltage-divider taps → ESP32 ADC pins):
-//   ONE_S_PIN   – B- to B1 tap  (Cell 1 bottom)
-//   TWO_S_PIN   – B- to B2 tap  (Cell 1+2 combined)
-//   THREE_S_PIN – B- to B+ tap  (full pack voltage)
+// Wiring:
+// 1. Voltage-divider taps → ESP32 ADC pins:
+//   ONE_S_PIN   (GPIO 34) – B- to B1 tap  (Cell 1 bottom)
+//   TWO_S_PIN   (GPIO 35) – B- to B2 tap  (Cell 1+2 combined)
+//   THREE_S_PIN (GPIO 32) – B- to B+ tap  (full pack voltage)
 //
-// Each tap must be divided down below 3.3 V.
-// Divider currently set with a 50 kΩ preset adjusted to 33 kΩ:
-// R_top = 100 kΩ, R_bot = 33 kΩ
-//   ratio ≈ 4.03  →  max measurable voltage ≈ 13.3 V (safe for 3S)
+// 2. INA226 Current Sensor → ESP32 I2C:
+//   VCC  → ESP32 3.3V
+//   GND  → ESP32 GND (common ground with battery B-)
+//   SDA  → ESP32 GPIO 21
+//   SCL  → ESP32 GPIO 22
+//
+// 3. INA226 Power Path (High-Side Sensing):
+//   IN+  → Battery Pack Positive terminal (B+)
+//   IN-  → System Load / Charger Positive terminal
+//   VBUS → Connect to IN+ (measures pack bus voltage up to 36V)
 // ============================================================
 
 #include <Arduino.h>
+#include <Wire.h>
+#include <INA226.h>
 
 // ─── ADC Pin Assignments ─────────────────────────────────────
 // NOTE: This project targets classic ESP32 DevKit V1.
@@ -22,6 +32,23 @@
 #define ONE_S_PIN    34   // Cell-1 tap   (B- → B1)
 #define TWO_S_PIN    35   // Cell-1+2 tap (B- → B2)
 #define THREE_S_PIN  32   // Full-pack tap (B- → B+)
+
+// ─── I2C & INA226 Configuration ──────────────────────────────
+#define I2C_SDA_PIN       21    // Default ESP32 I2C SDA
+#define I2C_SCL_PIN       22    // Default ESP32 I2C SCL
+#define INA226_I2C_ADDR   0x40  // Default I2C address (A0=GND, A1=GND)
+
+// ─── Shunt Resistor & Current Calibration ────────────────────
+// Check the large resistor marked on your INA226 breakout module:
+//   "R100" = 0.100 Ω (Common on purple CJMCU modules, max ~0.82 A)
+//   "R010" = 0.010 Ω (Common on 10A modules, max ~8.19 A)
+//   "R002" = 0.002 Ω (Common on 20A-40A modules, max ~40 A)
+#define INA226_SHUNT_OHMS    0.100f  // Shunt resistor value in Ohms
+
+// Maximum expected current in Amperes (used for calibration):
+// Note: INA226 max shunt differential voltage is ±81.92 mV.
+// Ensure (INA226_MAX_CURRENT_A * INA226_SHUNT_OHMS) <= 0.0819 V.
+#define INA226_MAX_CURRENT_A 0.800f  // Adjust for your specific shunt & load
 
 // ─── Voltage Divider Resistor Values (Ohms) ──────────────────
 // Adjust to match the resistors you physically soldered.
@@ -52,6 +79,39 @@
 // ─── Macro: compute voltage-divider ratio ────────────────────
 // V_real = V_adc * (R_top + R_bot) / R_bot
 #define DIVIDER_RATIO(rt, rb)  (((rt) + (rb)) / (rb))
+
+// ─── Global State & Objects ──────────────────────────────────
+INA226 ina(INA226_I2C_ADDR);
+bool ina226_ready = false;
+unsigned long last_sample_time = 0;
+float accumulated_mah = 0.0f; // Coulomb counter (net charge transferred)
+
+// ─── Initialize / Calibrate INA226 ───────────────────────────
+bool initINA226() {
+    if (!ina.begin()) {
+        return false;
+    }
+
+    // Ensure max current does not exceed INA226 81.92 mV limit
+    float maxCurrent = INA226_MAX_CURRENT_A;
+    if (maxCurrent * INA226_SHUNT_OHMS > 0.0819f) {
+        maxCurrent = 0.080f / INA226_SHUNT_OHMS;
+    }
+
+    int err = ina.setMaxCurrentShunt(maxCurrent, INA226_SHUNT_OHMS);
+    if (err != INA226_ERR_NONE) {
+        Serial.printf("[INA226] Calibration failed with code: 0x%04X\n", err);
+        return false;
+    }
+
+    // Configure 16 samples averaging for smooth, low-noise readings
+    ina.setAverage(INA226_16_SAMPLES);
+    ina.setBusVoltageConversionTime(INA226_1100_us);
+    ina.setShuntVoltageConversionTime(INA226_1100_us);
+    ina.setModeShuntBusContinuous();
+
+    return true;
+}
 
 // ─── Averaged ADC read (reduces noise) ───────────────────────
 uint16_t adcAveraged(uint8_t pin, uint8_t samples = NUM_SAMPLES) {
@@ -94,7 +154,7 @@ void setup() {
         delay(10);
     }
 
-    Serial.println("Booting battery monitor...");
+    Serial.println("\nBooting battery monitor...");
 
     // Configure ADC pins as inputs
     pinMode(ONE_S_PIN,   INPUT);
@@ -102,22 +162,37 @@ void setup() {
     pinMode(THREE_S_PIN, INPUT);
 
     analogReadResolution(12);
-
     // 11 dB attenuation → full-scale ≈ 3.1 V input
     analogSetAttenuation(ADC_11db);
 
+    // Initialize I2C bus
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+
+    // Initialize INA226 current sensor
+    ina226_ready = initINA226();
+    if (ina226_ready) {
+        Serial.printf("[INA226] Detected at 0x%02X (Shunt: %.3f Ω, MaxCurrent: %.2f A)\n",
+                      INA226_I2C_ADDR, INA226_SHUNT_OHMS, INA226_MAX_CURRENT_A);
+    } else {
+        Serial.println("[INA226] WARNING: Sensor not detected on I2C! Check wiring (SDA=21, SCL=22).");
+    }
+
     Serial.println("===========================================");
-    Serial.println("  3S Battery Pack – Per-Cell Voltage Mon  ");
+    Serial.println("   3S Battery Pack – Voltage & Current Mon  ");
     Serial.println("===========================================");
     Serial.printf("Divider ratios: C1=%.3f  C2=%.3f  C3=%.3f\n",
                   DIVIDER_RATIO(R_TOP_C1, R_BOT_C1),
                   DIVIDER_RATIO(R_TOP_C2, R_BOT_C2),
                   DIVIDER_RATIO(R_TOP_C3, R_BOT_C3));
     Serial.println("-------------------------------------------");
+
+    last_sample_time = millis();
 }
 
 // ============================================================
 void loop() {
+    unsigned long now = millis();
+
     // ── 1. Read tap voltages (averaged for noise reduction) ──
     uint16_t raw_tap1   = adcAveraged(ONE_S_PIN);
     uint16_t raw_tap12  = adcAveraged(TWO_S_PIN);
@@ -135,7 +210,7 @@ void loop() {
     float cell1_v = v_tap1;             // Bottom cell
     float cell2_v = v_tap12  - v_tap1;  // Middle cell
     float cell3_v = v_tap123 - v_tap12; // Top cell
-    float pack_v  = v_tap123;           // Full pack voltage
+    float pack_v  = v_tap123;           // Full pack voltage (from ADC divider)
 
     // ── 4. Clamp negative noise to 0 ─────────────────────────
     cell1_v = max(cell1_v, 0.0f);
@@ -153,11 +228,47 @@ void loop() {
     float v_min = min({cell1_v, cell2_v, cell3_v});
     float imbalance_mv = (v_max - v_min) * 1000.0f;
 
-    // ── 7. Print formatted report ─────────────────────────────
+    // ── 7. Read INA226 Current, Bus Voltage & Power ──────────
+    // Attempt re-detection if INA226 wasn't ready at startup
+    if (!ina226_ready) {
+        ina226_ready = initINA226();
+    } else if (!ina.isConnected()) {
+        ina226_ready = false;
+    }
+
+    float current_ma = 0.0f;
+    float current_a  = 0.0f;
+    float power_w    = 0.0f;
+    float shunt_mv   = 0.0f;
+    float bus_v      = 0.0f;
+    const char* flow_status = "DISCONNECTED";
+
+    if (ina226_ready) {
+        current_ma = ina.getCurrent_mA();
+        current_a  = ina.getCurrent();
+        power_w    = ina.getPower();
+        shunt_mv   = ina.getShuntVoltage_mV();
+        bus_v      = ina.getBusVoltage();
+
+        // Coulomb Counting: integrate current over time (mAh)
+        float dt_hours = (now - last_sample_time) / 3600000.0f;
+        accumulated_mah += (current_ma * dt_hours);
+
+        // Current flow state (threshold ±10 mA to ignore noise)
+        if (current_ma > 10.0f) {
+            flow_status = "DISCHARGING";
+        } else if (current_ma < -10.0f) {
+            flow_status = "CHARGING";
+        } else {
+            flow_status = "STANDBY / IDLE";
+        }
+    }
+
+    // ── 8. Print formatted report ─────────────────────────────
     Serial.println("===========================================");
-    Serial.printf("Pack Voltage  : %.3f V\n", pack_v);
-    Serial.printf("Avg Pack SoC  : %.1f %%\n", avg_soc);
-    Serial.printf("Cell Imbalance: %.1f mV%s\n",
+    Serial.printf("Pack Voltage (ADC) : %.3f V\n", pack_v);
+    Serial.printf("Avg Pack SoC       : %.1f %%\n", avg_soc);
+    Serial.printf("Cell Imbalance     : %.1f mV%s\n",
                   imbalance_mv,
                   (imbalance_mv > 100.0f) ? "  *** IMBALANCE ***" : "");
     Serial.println("-------------------------------------------");
@@ -168,10 +279,26 @@ void loop() {
     Serial.printf("Cell 3 (Top): %.3f V | SoC: %5.1f%% | %s\n",
                   cell3_v, soc3, cellStatus(cell3_v));
     Serial.println("-------------------------------------------");
+
+    if (ina226_ready) {
+        Serial.printf("Pack Current       : %+.2f mA (%+.3f A) [%s]\n",
+                      current_ma, current_a, flow_status);
+        Serial.printf("Pack Power         : %.3f W (%.1f mW)\n",
+                      power_w, power_w * 1000.0f);
+        Serial.printf("Shunt Voltage      : %+.3f mV\n", shunt_mv);
+        Serial.printf("INA226 Bus Voltage : %.3f V\n", bus_v);
+        Serial.printf("Net Charge (Ah)    : %+.3f mAh\n", accumulated_mah);
+    } else {
+        Serial.println("Pack Current       : [INA226 SENSOR NOT DETECTED]");
+        Serial.println("  -> Check VCC(3.3V), GND, SDA(GPIO21), SCL(GPIO22)");
+    }
+
+    Serial.println("-------------------------------------------");
     // Raw ADC debug (comment out after calibration)
-    Serial.printf("[RAW] tap1=%d  tap12=%d  tap123=%d\n",
+    Serial.printf("[RAW ADC] tap1=%d  tap12=%d  tap123=%d\n",
                   raw_tap1, raw_tap12, raw_tap123);
     Serial.println("===========================================\n");
 
+    last_sample_time = now;
     delay(SAMPLE_INTERVAL_MS);
 }
