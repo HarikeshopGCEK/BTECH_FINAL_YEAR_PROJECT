@@ -1,10 +1,11 @@
 #include <Arduino.h>
+int LED_PIN = LED_BUILTIN;
 void setup(){
-    pinMode(LED_BUILTIN, OUTPUT);
+    pinMode(LED_PIN, OUTPUT);
 }
 void loop(){
-    digitalWrite(LED_BUILTIN, HIGH);
+    digitalWrite(LED_PIN, HIGH);
     delay(1000);
-    digitalWrite(LED_BUILTIN, LOW);
+    digitalWrite(LED_PIN, LOW);
     delay(1000);
 }

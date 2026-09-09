@@ -1,5 +1,5 @@
 // ============================================================
-// 3S Li-Ion / LiPo Battery Pack – Voltage & Current Monitor
+// 3S Li-Ion / LiPo Battery Pack – Voltage & Load Current Monitor
 // Platform       : ESP32 DevKit V1 (12-bit ADC, 3.3 V reference)
 // Current Sensor : INA226 (I2C)
 //
@@ -15,9 +15,9 @@
 //   SDA  → ESP32 GPIO 21
 //   SCL  → ESP32 GPIO 22
 //
-// 3. INA226 Power Path (High-Side Sensing):
+// 3. INA226 Power Path (High-Side Load Current Sensing):
 //   IN+  → Battery Pack Positive terminal (B+)
-//   IN-  → System Load / Charger Positive terminal
+//   IN-  → Load Positive terminal (Vcc of load)
 //   VBUS → Connect to IN+ (measures pack bus voltage up to 36V)
 // ============================================================
 
@@ -38,14 +38,14 @@
 #define I2C_SCL_PIN       22    // Default ESP32 I2C SCL
 #define INA226_I2C_ADDR   0x40  // Default I2C address (A0=GND, A1=GND)
 
-// ─── Shunt Resistor & Current Calibration ────────────────────
+// ─── Shunt Resistor & Load Current Calibration ───────────────
 // Check the large resistor marked on your INA226 breakout module:
 //   "R100" = 0.100 Ω (Common on purple CJMCU modules, max ~0.82 A)
 //   "R010" = 0.010 Ω (Common on 10A modules, max ~8.19 A)
 //   "R002" = 0.002 Ω (Common on 20A-40A modules, max ~40 A)
-#define INA226_SHUNT_OHMS    0.100f  // Shunt resistor value in Ohms
+#define INA226_SHUNT_OHMS    0.100f  // Shunt resistor value in Ohms (R100 = 0.100 Ω)
 
-// Maximum expected current in Amperes (used for calibration):
+// Maximum expected load current in Amperes:
 // Note: INA226 max shunt differential voltage is ±81.92 mV.
 // Ensure (INA226_MAX_CURRENT_A * INA226_SHUNT_OHMS) <= 0.0819 V.
 #define INA226_MAX_CURRENT_A 0.800f  // Adjust for your specific shunt & load
@@ -84,7 +84,7 @@
 INA226 ina(INA226_I2C_ADDR);
 bool ina226_ready = false;
 unsigned long last_sample_time = 0;
-float accumulated_mah = 0.0f; // Coulomb counter (net charge transferred)
+float accumulated_load_mah = 0.0f; // Total capacity pulled by load (mAh)
 
 // ─── Initialize / Calibrate INA226 ───────────────────────────
 bool initINA226() {
@@ -171,14 +171,14 @@ void setup() {
     // Initialize INA226 current sensor
     ina226_ready = initINA226();
     if (ina226_ready) {
-        Serial.printf("[INA226] Detected at 0x%02X (Shunt: %.3f Ω, MaxCurrent: %.2f A)\n",
+        Serial.printf("[INA226] Detected at 0x%02X (Shunt: %.3f Ω, MaxLoadCurrent: %.2f A)\n",
                       INA226_I2C_ADDR, INA226_SHUNT_OHMS, INA226_MAX_CURRENT_A);
     } else {
         Serial.println("[INA226] WARNING: Sensor not detected on I2C! Check wiring (SDA=21, SCL=22).");
     }
 
     Serial.println("===========================================");
-    Serial.println("   3S Battery Pack – Voltage & Current Mon  ");
+    Serial.println(" 3S Battery Pack – Voltage & Load Monitor  ");
     Serial.println("===========================================");
     Serial.printf("Divider ratios: C1=%.3f  C2=%.3f  C3=%.3f\n",
                   DIVIDER_RATIO(R_TOP_C1, R_BOT_C1),
@@ -228,7 +228,7 @@ void loop() {
     float v_min = min({cell1_v, cell2_v, cell3_v});
     float imbalance_mv = (v_max - v_min) * 1000.0f;
 
-    // ── 7. Read INA226 Current, Bus Voltage & Power ──────────
+    // ── 7. Read INA226 Load Current, Bus Voltage & Power ─────
     // Attempt re-detection if INA226 wasn't ready at startup
     if (!ina226_ready) {
         ina226_ready = initINA226();
@@ -236,31 +236,33 @@ void loop() {
         ina226_ready = false;
     }
 
-    float current_ma = 0.0f;
-    float current_a  = 0.0f;
-    float power_w    = 0.0f;
-    float shunt_mv   = 0.0f;
-    float bus_v      = 0.0f;
-    const char* flow_status = "DISCONNECTED";
+    float load_current_ma = 0.0f;
+    float load_current_a  = 0.0f;
+    float load_power_w    = 0.0f;
+    float shunt_mv        = 0.0f;
+    float bus_v           = 0.0f;
+    const char* load_status = "DISCONNECTED";
 
     if (ina226_ready) {
-        current_ma = ina.getCurrent_mA();
-        current_a  = ina.getCurrent();
-        power_w    = ina.getPower();
-        shunt_mv   = ina.getShuntVoltage_mV();
-        bus_v      = ina.getBusVoltage();
+        float raw_current_ma = ina.getCurrent_mA();
+        
+        // Current drawn by load: use magnitude so it always reads positive
+        // regardless of whether IN+/IN- are connected forward or reverse.
+        load_current_ma = fabs(raw_current_ma);
+        load_current_a  = load_current_ma / 1000.0f;
+        load_power_w    = fabs(ina.getPower());
+        shunt_mv        = ina.getShuntVoltage_mV();
+        bus_v           = ina.getBusVoltage();
 
-        // Coulomb Counting: integrate current over time (mAh)
+        // Integrate current drawn by load over time to track total energy consumed (mAh)
         float dt_hours = (now - last_sample_time) / 3600000.0f;
-        accumulated_mah += (current_ma * dt_hours);
+        accumulated_load_mah += (load_current_ma * dt_hours);
 
-        // Current flow state (threshold ±10 mA to ignore noise)
-        if (current_ma > 10.0f) {
-            flow_status = "DISCHARGING";
-        } else if (current_ma < -10.0f) {
-            flow_status = "CHARGING";
+        // Load activity state (threshold 5 mA to filter out idle ADC noise)
+        if (load_current_ma > 5.0f) {
+            load_status = "LOAD ACTIVE";
         } else {
-            flow_status = "STANDBY / IDLE";
+            load_status = "IDLE (NO LOAD)";
         }
     }
 
@@ -281,15 +283,15 @@ void loop() {
     Serial.println("-------------------------------------------");
 
     if (ina226_ready) {
-        Serial.printf("Pack Current       : %+.2f mA (%+.3f A) [%s]\n",
-                      current_ma, current_a, flow_status);
-        Serial.printf("Pack Power         : %.3f W (%.1f mW)\n",
-                      power_w, power_w * 1000.0f);
+        Serial.printf("Load Current       : %.2f mA (%.3f A) [%s]\n",
+                      load_current_ma, load_current_a, load_status);
+        Serial.printf("Load Power         : %.3f W (%.1f mW)\n",
+                      load_power_w, load_power_w * 1000.0f);
+        Serial.printf("Total Load Consumed: %.2f mAh\n", accumulated_load_mah);
         Serial.printf("Shunt Voltage      : %+.3f mV\n", shunt_mv);
         Serial.printf("INA226 Bus Voltage : %.3f V\n", bus_v);
-        Serial.printf("Net Charge (Ah)    : %+.3f mAh\n", accumulated_mah);
     } else {
-        Serial.println("Pack Current       : [INA226 SENSOR NOT DETECTED]");
+        Serial.println("Load Current       : [INA226 SENSOR NOT DETECTED]");
         Serial.println("  -> Check VCC(3.3V), GND, SDA(GPIO21), SCL(GPIO22)");
     }
 
