@@ -7,3 +7,10 @@
 **/*.csv
 *.venv
 .*
+*.keras
+*.joblib
+*.npz
+**/*.joblib
+**/*.npz
+# Ignore Python cache files
+__pycache__/
