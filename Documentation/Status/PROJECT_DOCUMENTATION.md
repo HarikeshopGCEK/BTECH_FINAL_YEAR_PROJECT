@@ -9,6 +9,7 @@
 ## 1. Project Overview
 
 The goal is a real-time, on-device battery monitoring system that estimates:
+
 - **SOC** (0–100%) — how full the battery is right now
 - **SOH** — long-term capacity health relative to rated capacity
 - **RUL** — cycles remaining before end-of-life
@@ -22,10 +23,13 @@ Modeling approach: a **comparative study** across a complexity ladder — a clas
 ## 2. Data Pipeline
 
 ### 2.1 Source Data
+
 NASA's Li-ion battery degradation dataset (`.mat` format), 34 batteries, each containing hundreds of charge/discharge/impedance cycles with per-timestep voltage, current, and temperature.
 
 ### 2.2 Extraction (`extract_all_batteries.py`)
+
 A custom script parses every `.mat` file in a folder and produces two CSVs:
+
 - **`timeseries_soc.csv`** — per-timestep voltage/current/temperature/SOC for every discharge cycle
 - **`cycle_summary_soh_rul.csv`** — per-cycle capacity/SOH/RUL summary
 
@@ -35,11 +39,11 @@ A custom script parses every `.mat` file in a folder and produces two CSVs:
 
 Three real data-quality problems were discovered and corrected during this project:
 
-**(a) SOH baseline was fragile.** Initially computed against each battery's *first-cycle* capacity, but some batteries' first cycle is itself an anomaly (e.g., one battery's cycle 1 measured 0.068 Ah while every subsequent cycle measured 1.1–1.3 Ah). This inflated SOH to nonsensical values (up to 27×). **Fix:** rated capacity is now computed as the 95th percentile of that battery's own capacity distribution — robust to a single bad first reading.
+**(a) SOH baseline was fragile.** Initially computed against each battery's _first-cycle_ capacity, but some batteries' first cycle is itself an anomaly (e.g., one battery's cycle 1 measured 0.068 Ah while every subsequent cycle measured 1.1–1.3 Ah). This inflated SOH to nonsensical values (up to 27×). **Fix:** rated capacity is now computed as the 95th percentile of that battery's own capacity distribution — robust to a single bad first reading.
 
 **(b) Protocol-shift cycles.** Several batteries (B0041–B0044 and others) mixed in a large block of cycles run at a much shallower discharge depth — not gradual degradation, but a different test protocol entirely. **Decision:** these flagged cycles (identified as SOH < 0.3 relative to the robust baseline) were dropped, keeping the rest of each affected battery intact.
 
-**(c) Trailing rest-phase samples polluting SOC=0 label.** After a cycle's coulomb count first reaches SOC=0%, some cycles kept logging additional "rest" samples where current drops to ~0 and voltage recovers upward — while SOC (correctly) stays at 0. This created a vertical smear of contradictory voltage readings all labeled "SOC=0%", which measurably degraded model training (visible as a systematic error artifact near SOC=0 in early model runs). **Fix:** each cycle is truncated at its *first* SOC=0 crossing, preserving legitimate mid-cycle rest periods (real signal for a device that idles between draws) while removing the ambiguous post-depletion tail.
+**(c) Trailing rest-phase samples polluting SOC=0 label.** After a cycle's coulomb count first reaches SOC=0%, some cycles kept logging additional "rest" samples where current drops to ~0 and voltage recovers upward — while SOC (correctly) stays at 0. This created a vertical smear of contradictory voltage readings all labeled "SOC=0%", which measurably degraded model training (visible as a systematic error artifact near SOC=0 in early model runs). **Fix:** each cycle is truncated at its _first_ SOC=0 crossing, preserving legitimate mid-cycle rest periods (real signal for a device that idles between draws) while removing the ambiguous post-depletion tail.
 
 Final cleaned dataset: **32 batteries**, ~2,500 cycles, ~740,000 timesteps.
 
@@ -59,22 +63,23 @@ Final cleaned dataset: **32 batteries**, ~2,500 cycles, ~740,000 timesteps.
 
 ## 4. SOC Modeling — Comparative Study Results
 
-**Train/test split:** at the *battery* level (entire batteries held out for testing), not a random row split — this measures generalization to a battery the model has never seen, the real deployment scenario.
+**Train/test split:** at the _battery_ level (entire batteries held out for testing), not a random row split — this measures generalization to a battery the model has never seen, the real deployment scenario.
 
 **Models:**
-1. **Coulomb Counting** (classical baseline) — uses each battery's *rated* capacity (known in advance), not that cycle's true capacity, matching what a real embedded coulomb counter can actually do
+
+1. **Coulomb Counting** (classical baseline) — uses each battery's _rated_ capacity (known in advance), not that cycle's true capacity, matching what a real embedded coulomb counter can actually do
 2. **Random Forest** — windowed statistical features (mean/min/max/last/delta per channel)
 3. **MLP** — flattened window input, dropout + early stopping (added after an initial run showed severe overfitting — training loss kept falling while validation loss rose)
 4. **LSTM** — raw sequence input, same dropout + early stopping treatment
 
 ### Results (full 32-battery training run)
 
-| Model | MAE (%) | RMSE (%) | R² |
-|---|---|---|---|
-| Coulomb Counting | 4.27 | 7.54 | 0.927 |
+| Model             | MAE (%)  | RMSE (%) | R²        |
+| ----------------- | -------- | -------- | --------- |
+| Coulomb Counting  | 4.27     | 7.54     | 0.927     |
 | **Random Forest** | **3.59** | **5.15** | **0.966** |
-| MLP | 6.19 | 7.89 | 0.921 |
-| LSTM | 6.70 | 8.68 | 0.904 |
+| MLP               | 6.19     | 7.89     | 0.921     |
+| LSTM              | 6.70     | 8.68     | 0.904     |
 
 **Headline finding:** all three ML approaches beat classical coulomb counting on error metrics. Coulomb counting's error compounds with depth of discharge (a diagonal-fan pattern in its error plot — a textbook signature of integration drift), while ML models use instantaneous sensor readings and don't accumulate that drift.
 
@@ -89,16 +94,23 @@ Two held-out test batteries (B0038, B0054) showed a systematic error pattern (gr
 ## 5. Hardware — Cell Voltage & Temperature Sensing
 
 ### 5.1 Design
+
 3S pack, no dedicated BMS AFE chip — direct measurement via:
+
 - **3 voltage dividers** (one per tap: Cell1 alone, Cell1+Cell2, full pack), each with a trim pot for coarse ratio adjustment
 - **3 NTC thermistors** (10kΩ, B=3950, with 10kΩ series resistor), one per cell, wired independently to 3.3V/GND (not part of the series stack)
 - Individual cell voltage computed in software: `Cell2 = Tap2 − Tap1`, `Cell3 = Tap3 − Tap2`
 
+> **Component verification note:** the thermistor currently tested was measured at approximately 10Ω, not 10kΩ. It is therefore not suitable for the 10kΩ NTC divider above; a verified 10kΩ-at-25°C NTC is required for temperature measurement.
+
 ### 5.2 Tap1 Divider Change
+
 Original 100kΩ/50kΩ divider only used ~1.4V of the ADC's 0–3.3V range at full charge (4.2V). Changed Tap1's top resistor to **22kΩ** (keeping 50kΩ bottom/pot), landing at ~2.92V at full charge — much better use of ADC resolution, comfortable margin below 3.3V.
 
 ### 5.3 Software Calibration Procedure
+
 Two-stage approach: pot handles coarse ratio, software handles precision.
+
 1. Disconnect battery; feed each tap's divider input directly (not the assembled pack) with 5 known reference voltages spanning that tap's real operating range (Tap1: 2.7–4.2V; Tap2: 5.4–8.4V; Tap3: 8.1–12.6V)
 2. Log oversampled (64-sample averaged) raw ADC values at each reference point
 3. Fit slope/offset (linear or quadratic) per channel via least-squares
@@ -107,13 +119,25 @@ Two-stage approach: pot handles coarse ratio, software handles precision.
 
 ### 5.4 Calibration Results (First Attempt)
 
-| Tap | Fit | Max Error | Status |
-|---|---|---|---|
-| Tap1 | Quadratic | 22.0 mV | Needs re-measurement |
-| Tap2 | Quadratic | 5.1 mV | **Good, in use** |
-| Tap3 | Quadratic | 211.7 mV | Needs re-measurement |
+| Tap  | Fit       | Max Error | Status               |
+| ---- | --------- | --------- | -------------------- |
+| Tap1 | Quadratic | 22.0 mV   | Needs re-measurement |
+| Tap2 | Quadratic | 5.1 mV    | **Good, in use**     |
+| Tap3 | Quadratic | 211.7 mV  | Needs re-measurement |
 
 Tap2's clean result confirms the method works when the input measurement is clean. Tap1 and Tap3's high errors were diagnosed (via leave-one-out residual analysis) as measurement noise — likely single un-averaged ADC reads or a loose connection during the sweep — not a fundamental curve-shape problem. **Action item: re-run Tap1 and Tap3 calibration sweeps using the oversampled reader and verify solid connections throughout.**
+
+### 5.5 Current ESP32-S3 Firmware Calibration
+
+The current `BATTERY_MONITORING_S3` firmware uses the following measured divider values and quadratic ADC calibration equations. `raw` is the averaged 12-bit ADC reading and the result is the tap voltage in volts.
+
+| Tap  | Physical divider values  | Calibration equation                                 | Calibration range |
+| ---- | ------------------------ | ---------------------------------------------------- | ----------------- |
+| Tap1 | 22kΩ top, 48.6kΩ bottom  | `V = -1.404856e-7*raw^2 + 0.00189009*raw - 0.775924` | 2.7–4.2V          |
+| Tap2 | 100kΩ top, 49.5kΩ bottom | `V = -2.672302e-7*raw^2 + 0.00380713*raw - 1.370929` | 5.4–8.4V          |
+| Tap3 | 100kΩ top, 28.7kΩ bottom | `V = -3.830651e-7*raw^2 + 0.00550616*raw - 1.916985` | 8.1–12.6V         |
+
+The firmware averages 20 ADC samples per reading. The latest validation points are: Tap1 maximum error approximately 31.5mV, Tap2 approximately 56mV, and Tap3 approximately 410mV. Tap3 remains the least accurate channel and should be re-calibrated before it is used for safety decisions.
 
 ---
 
