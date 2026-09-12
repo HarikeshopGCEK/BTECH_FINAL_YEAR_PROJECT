@@ -22,9 +22,14 @@
 // ADC PIN ASSIGNMENTS
 // ============================================================
 
-#define ONE_S_PIN 4       // Cell-1 tap: B- → B1
-#define TWO_S_PIN 5       // Cell-1+2 tap: B- → B2
-#define THREE_S_PIN 6     // Full pack tap: B- → B+
+#define ONE_S_PIN 4   // Cell-1 tap: B- → B1
+#define TWO_S_PIN 5   // Cell-1+2 tap: B- → B2
+#define THREE_S_PIN 6 // Full pack tap: B- → B+
+
+// NTC divider ADC inputs. Keep these separate from the voltage taps and I2C pins.
+#define NTC_CELL1_PIN 1
+#define NTC_CELL2_PIN 2
+#define NTC_CELL3_PIN 7
 
 // ============================================================
 // I2C & INA226 CONFIGURATION
@@ -96,12 +101,28 @@
 #define R_BOT_C3 28700.0f
 
 // ============================================================
+// NTC CONFIGURATION
+// ============================================================
+//
+// Divider wiring for each NTC:
+//   3.3 V -> 10 kΩ fixed resistor -> ADC pin -> NTC -> GND
+//
+// The pictured NTC is marked 10, so its nominal resistance is
+// assumed to be 10 kΩ at 25 °C. Confirm the beta value from its
+// datasheet for better temperature accuracy.
+//
+
+#define NTC_FIXED_OHMS 10000.0f
+#define NTC_NOMINAL_OHMS 10000.0f
+#define NTC_NOMINAL_TEMP_C 25.0f
+#define NTC_BETA 3950.0f
+#define NTC_SUPPLY_MV 3300.0f
+
+// ============================================================
 // ADC VOLTAGE CALIBRATION
 // ============================================================
 //
-// Experimentally measured:
-//
-// V_real = slope × raw_adc + offset
+// Experimentally measured calibration equations.
 //
 // ------------------------------------------------------------
 // TAP 1
@@ -115,8 +136,9 @@
 // Maximum error ≈ 31.5 mV
 // ------------------------------------------------------------
 
-#define TAP1_SLOPE  0.00105757f
-#define TAP1_OFFSET 0.461278f
+#define TAP1_A -1.404856e-07f
+#define TAP1_B 0.00189009f
+#define TAP1_C -0.775924f
 
 // ------------------------------------------------------------
 // TAP 2
@@ -130,8 +152,9 @@
 // Maximum error ≈ 56 mV
 // ------------------------------------------------------------
 
-#define TAP2_SLOPE  0.00241651f
-#define TAP2_OFFSET 0.456195f
+#define TAP2_A -2.672302e-07f
+#define TAP2_B 0.00380713f
+#define TAP2_C -1.370929f
 
 // ------------------------------------------------------------
 // TAP 3
@@ -149,8 +172,9 @@
 // than Tap 1 and Tap 2.
 // ------------------------------------------------------------
 
-#define TAP3_SLOPE  0.00341155f
-#define TAP3_OFFSET 1.066423f
+#define TAP3_A -3.830651e-07f
+#define TAP3_B 0.00550616f
+#define TAP3_C -1.916985f
 
 // ============================================================
 // ADC PARAMETERS
@@ -166,10 +190,10 @@
 // LI-ION CELL VOLTAGE THRESHOLDS
 // ============================================================
 
-#define CELL_FULL    4.20f
+#define CELL_FULL 4.20f
 #define CELL_NOMINAL 3.70f
-#define CELL_LOW     3.30f
-#define CELL_CUTOFF  3.00f
+#define CELL_LOW 3.30f
+#define CELL_CUTOFF 3.00f
 
 // ============================================================
 // SAMPLE INTERVAL
@@ -215,15 +239,13 @@ bool initINA226()
     // Configure INA226 calibration
     int err = ina.setMaxCurrentShunt(
         maxCurrent,
-        INA226_SHUNT_OHMS
-    );
+        INA226_SHUNT_OHMS);
 
     if (err != INA226_ERR_NONE)
     {
         Serial.printf(
             "[INA226] Calibration failed with code: 0x%04X\n",
-            err
-        );
+            err);
 
         return false;
     }
@@ -235,12 +257,10 @@ bool initINA226()
     ina.setAverage(INA226_16_SAMPLES);
 
     ina.setBusVoltageConversionTime(
-        INA226_1100_us
-    );
+        INA226_1100_us);
 
     ina.setShuntVoltageConversionTime(
-        INA226_1100_us
-    );
+        INA226_1100_us);
 
     ina.setModeShuntBusContinuous();
 
@@ -253,8 +273,7 @@ bool initINA226()
 
 uint16_t adcAveraged(
     uint8_t pin,
-    uint8_t samples = NUM_SAMPLES
-)
+    uint8_t samples = NUM_SAMPLES)
 {
     uint32_t sum = 0;
 
@@ -274,17 +293,53 @@ uint16_t adcAveraged(
 
 float tap1Voltage(uint16_t raw)
 {
-    return (TAP1_SLOPE * raw) + TAP1_OFFSET;
+    return (TAP1_A * raw * raw) + (TAP1_B * raw) + TAP1_C;
 }
 
 float tap2Voltage(uint16_t raw)
 {
-    return (TAP2_SLOPE * raw) + TAP2_OFFSET;
+    return (TAP2_A * raw * raw) + (TAP2_B * raw) + TAP2_C;
 }
 
 float tap3Voltage(uint16_t raw)
 {
-    return (TAP3_SLOPE * raw) + TAP3_OFFSET;
+    return (TAP3_A * raw * raw) + (TAP3_B * raw) + TAP3_C;
+}
+
+float ntcVoltageMv(uint8_t pin)
+{
+    uint32_t voltage_sum_mv = 0;
+
+    for (uint8_t sample = 0; sample < NUM_SAMPLES; sample++)
+    {
+        voltage_sum_mv += analogReadMilliVolts(pin);
+        delayMicroseconds(200);
+    }
+
+    return voltage_sum_mv / (float)NUM_SAMPLES;
+}
+
+float ntcTemperatureC(uint8_t pin)
+{
+    float voltage_mv = ntcVoltageMv(pin);
+
+    if (voltage_mv <= 0.0f || voltage_mv >= NTC_SUPPLY_MV)
+    {
+        return NAN;
+    }
+
+    // For 3.3 V -> fixed resistor -> ADC -> NTC -> GND:
+    // R_ntc = R_fixed * V_adc / (V_supply - V_adc)
+    float ntc_ohms =
+        NTC_FIXED_OHMS * voltage_mv /
+        (NTC_SUPPLY_MV - voltage_mv);
+
+    float temperature_kelvin =
+        1.0f /
+        ((1.0f / (NTC_NOMINAL_TEMP_C + 273.15f)) +
+         (logf(ntc_ohms / NTC_NOMINAL_OHMS) / NTC_BETA));
+
+    return temperature_kelvin - 273.15f;
 }
 
 // ============================================================
@@ -304,9 +359,9 @@ float estimateSoC(float cellV)
     }
 
     return (
-        (cellV - CELL_CUTOFF) /
-        (CELL_FULL - CELL_CUTOFF)
-    ) * 100.0f;
+               (cellV - CELL_CUTOFF) /
+               (CELL_FULL - CELL_CUTOFF)) *
+           100.0f;
 }
 
 // ============================================================
@@ -354,16 +409,14 @@ void setup()
 
     while (
         !Serial &&
-        (millis() - serial_wait_start < 2000)
-    )
+        (millis() - serial_wait_start < 2000))
     {
         delay(10);
     }
 
     Serial.println();
     Serial.println(
-        "Booting battery monitor (ESP32-S3)..."
-    );
+        "Booting battery monitor (ESP32-S3)...");
 
     // --------------------------------------------------------
     // ADC pins
@@ -372,14 +425,16 @@ void setup()
     pinMode(ONE_S_PIN, INPUT);
     pinMode(TWO_S_PIN, INPUT);
     pinMode(THREE_S_PIN, INPUT);
+    pinMode(NTC_CELL1_PIN, INPUT);
+    pinMode(NTC_CELL2_PIN, INPUT);
+    pinMode(NTC_CELL3_PIN, INPUT);
 
     // 12-bit ADC
     analogReadResolution(12);
 
     // 11 dB attenuation
     analogSetAttenuation(
-        ADC_ATTEN_DB_11
-    );
+        ADC_ATTEN_DB_11);
 
     // --------------------------------------------------------
     // I2C
@@ -387,8 +442,7 @@ void setup()
 
     Wire.begin(
         I2C_SDA_PIN,
-        I2C_SCL_PIN
-    );
+        I2C_SCL_PIN);
 
     // --------------------------------------------------------
     // INA226
@@ -405,8 +459,7 @@ void setup()
 
             INA226_I2C_ADDR,
             INA226_SHUNT_OHMS,
-            INA226_MAX_CURRENT_A
-        );
+            INA226_MAX_CURRENT_A);
     }
     else
     {
@@ -416,8 +469,7 @@ void setup()
             "(SDA=%d, SCL=%d).\n",
 
             I2C_SDA_PIN,
-            I2C_SCL_PIN
-        );
+            I2C_SCL_PIN);
     }
 
     // --------------------------------------------------------
@@ -425,58 +477,51 @@ void setup()
     // --------------------------------------------------------
 
     Serial.println(
-        "==========================================="
-    );
+        "===========================================");
 
     Serial.println(
-        " 3S Battery Pack – Voltage & Load Monitor"
-    );
+        " 3S Battery Pack – Voltage & Load Monitor");
 
     Serial.println(
-        "==========================================="
-    );
+        "===========================================");
 
     Serial.println(
-        "Voltage calibration:"
-    );
+        "Voltage calibration:");
 
     Serial.printf(
-        "Tap 1: V = %.8f * ADC + %.6f\n",
-        TAP1_SLOPE,
-        TAP1_OFFSET
-    );
+        "Tap 1: V = %.8e * ADC^2 + %.8f * ADC + %.6f\n",
+        TAP1_A,
+        TAP1_B,
+        TAP1_C);
 
     Serial.printf(
-        "Tap 2: V = %.8f * ADC + %.6f\n",
-        TAP2_SLOPE,
-        TAP2_OFFSET
-    );
+        "Tap 2: V = %.8e * ADC^2 + %.8f * ADC + %.6f\n",
+        TAP2_A,
+        TAP2_B,
+        TAP2_C);
 
     Serial.printf(
-        "Tap 3: V = %.8f * ADC + %.6f\n",
-        TAP3_SLOPE,
-        TAP3_OFFSET
-    );
+        "Tap 3: V = %.8e * ADC^2 + %.8f * ADC + %.6f\n",
+        TAP3_A,
+        TAP3_B,
+        TAP3_C);
 
     Serial.println("-------------------------------------------");
 
     Serial.printf(
         "Cell 1 divider: %.0f Ω / %.0f Ω\n",
         R_TOP_C1,
-        R_BOT_C1
-    );
+        R_BOT_C1);
 
     Serial.printf(
         "Cell 2 divider: %.0f Ω / %.0f Ω\n",
         R_TOP_C2,
-        R_BOT_C2
-    );
+        R_BOT_C2);
 
     Serial.printf(
         "Cell 3 divider: %.0f Ω / %.0f Ω\n",
         R_TOP_C3,
-        R_BOT_C3
-    );
+        R_BOT_C3);
 
     Serial.println("-------------------------------------------");
 
@@ -535,6 +580,24 @@ void loop()
     float v_tap123 =
         tap3Voltage(raw_tap123);
 
+    float temperature_cell1_c =
+        ntcTemperatureC(NTC_CELL1_PIN);
+
+    float temperature_cell2_c =
+        ntcTemperatureC(NTC_CELL2_PIN);
+
+    float temperature_cell3_c =
+        ntcTemperatureC(NTC_CELL3_PIN);
+
+    float ntc_voltage_cell1_mv =
+        ntcVoltageMv(NTC_CELL1_PIN);
+
+    float ntc_voltage_cell2_mv =
+        ntcVoltageMv(NTC_CELL2_PIN);
+
+    float ntc_voltage_cell3_mv =
+        ntcVoltageMv(NTC_CELL3_PIN);
+
     // ========================================================
     // 3. CALCULATE INDIVIDUAL CELL VOLTAGES
     // ========================================================
@@ -582,14 +645,12 @@ void loop()
     float v_max =
         max(
             max(cell1_v, cell2_v),
-            cell3_v
-        );
+            cell3_v);
 
     float v_min =
         min(
             min(cell1_v, cell2_v),
-            cell3_v
-        );
+            cell3_v);
 
     float imbalance_mv =
         (v_max - v_min) * 1000.0f;
@@ -647,8 +708,7 @@ void loop()
         // ----------------------------------------------------
 
         float dt_hours =
-            (now - last_sample_time)
-            / 3600000.0f;
+            (now - last_sample_time) / 3600000.0f;
 
         accumulated_load_mah +=
             load_current_ma * dt_hours;
@@ -674,55 +734,61 @@ void loop()
     // ========================================================
 
     Serial.println(
-        "==========================================="
-    );
+        "===========================================");
 
     Serial.printf(
         "Pack Voltage (ADC) : %.3f V\n",
-        pack_v
-    );
+        pack_v);
 
     Serial.printf(
         "Avg Pack SoC       : %.1f %%\n",
-        avg_soc
-    );
+        avg_soc);
 
     Serial.printf(
         "Cell Imbalance     : %.1f mV%s\n",
         imbalance_mv,
         (imbalance_mv > 100.0f)
             ? "  *** IMBALANCE ***"
-            : ""
-    );
+            : "");
 
     Serial.println(
-        "-------------------------------------------"
-    );
+        "-------------------------------------------");
+
+    Serial.printf(
+        "Cell temperatures: C1 %.1f C | C2 %.1f C | C3 %.1f C\n",
+        temperature_cell1_c,
+        temperature_cell2_c,
+        temperature_cell3_c);
+
+    Serial.printf(
+        "NTC divider voltage: C1 %.0f mV | C2 %.0f mV | C3 %.0f mV\n",
+        ntc_voltage_cell1_mv,
+        ntc_voltage_cell2_mv,
+        ntc_voltage_cell3_mv);
+
+    Serial.println(
+        "-------------------------------------------");
 
     Serial.printf(
         "Cell 1 (Bot): %.3f V | SoC: %5.1f%% | %s\n",
         cell1_v,
         soc1,
-        cellStatus(cell1_v)
-    );
+        cellStatus(cell1_v));
 
     Serial.printf(
         "Cell 2 (Mid): %.3f V | SoC: %5.1f%% | %s\n",
         cell2_v,
         soc2,
-        cellStatus(cell2_v)
-    );
+        cellStatus(cell2_v));
 
     Serial.printf(
         "Cell 3 (Top): %.3f V | SoC: %5.1f%% | %s\n",
         cell3_v,
         soc3,
-        cellStatus(cell3_v)
-    );
+        cellStatus(cell3_v));
 
     Serial.println(
-        "-------------------------------------------"
-    );
+        "-------------------------------------------");
 
     // ========================================================
     // INA226 REPORT
@@ -734,43 +800,36 @@ void loop()
             "Load Current       : %.2f mA (%.3f A) [%s]\n",
             load_current_ma,
             load_current_a,
-            load_status
-        );
+            load_status);
 
         Serial.printf(
             "Load Power         : %.3f W (%.1f mW)\n",
             load_power_w,
-            load_power_w * 1000.0f
-        );
+            load_power_w * 1000.0f);
 
         Serial.printf(
             "Total Load Consumed: %.2f mAh\n",
-            accumulated_load_mah
-        );
+            accumulated_load_mah);
 
         Serial.printf(
             "Shunt Voltage      : %+.3f mV\n",
-            shunt_mv
-        );
+            shunt_mv);
 
         Serial.printf(
             "INA226 Bus Voltage : %.3f V\n",
-            bus_v
-        );
+            bus_v);
     }
     else
     {
         Serial.println(
             "Load Current       : "
-            "[INA226 SENSOR NOT DETECTED]"
-        );
+            "[INA226 SENSOR NOT DETECTED]");
 
         Serial.printf(
             "  -> Check VCC(3.3V), GND, "
             "SDA(GPIO%d), SCL(GPIO%d)\n",
             I2C_SDA_PIN,
-            I2C_SCL_PIN
-        );
+            I2C_SCL_PIN);
     }
 
     // ========================================================
@@ -778,27 +837,23 @@ void loop()
     // ========================================================
 
     Serial.println(
-        "-------------------------------------------"
-    );
+        "-------------------------------------------");
 
     Serial.printf(
         "[RAW ADC] tap1=%d  tap12=%d  tap123=%d\n",
         raw_tap1,
         raw_tap12,
-        raw_tap123
-    );
+        raw_tap123);
 
     // Also show calibrated tap voltages
     Serial.printf(
         "[TAPS] T1=%.3f V  T2=%.3f V  T3=%.3f V\n",
         v_tap1,
         v_tap12,
-        v_tap123
-    );
+        v_tap123);
 
     Serial.println(
-        "===========================================\n"
-    );
+        "===========================================\n");
 
     // ========================================================
     // UPDATE TIMER
