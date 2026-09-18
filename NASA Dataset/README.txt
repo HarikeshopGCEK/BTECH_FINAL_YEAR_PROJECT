@@ -36,3 +36,4 @@ cycle:	top level structure array containing the charge, discharge and impedance 
 		Rectified_impedance:	Calibrated and smoothed battery impedance (Ohms) 
 		Re:			Estimated electrolyte resistance (Ohms)
 		Rct:			Estimated charge transfer resistance (Ohms)
+Fix
