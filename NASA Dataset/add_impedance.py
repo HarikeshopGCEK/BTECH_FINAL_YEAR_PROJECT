@@ -54,8 +54,8 @@ def extract_impedance_per_discharge(mat_path):
 
         re_val, rct_val = np.nan, np.nan
         if i + 1 < len(cycles) and cycles[i + 1].get('type') == 'impedance':
-            re_val = cycles[i + 1]['data']['Re']
-            rct_val = cycles[i + 1]['data']['Rct']
+            re_val = np.real(cycles[i + 1]['data']['Re'])
+            rct_val = np.real(cycles[i + 1]['data']['Rct'])
 
         rows.append({
             'battery_id': battery_id,
