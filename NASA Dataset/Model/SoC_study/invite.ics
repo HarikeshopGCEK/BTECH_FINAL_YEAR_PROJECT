@@ -1,0 +1,56 @@
+BEGIN:VCALENDAR
+PRODID:-//Google Inc//Google Calendar 70.9054//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:REQUEST
+BEGIN:VTIMEZONE
+TZID:Asia/Kolkata
+X-LIC-LOCATION:Asia/Kolkata
+BEGIN:STANDARD
+TZOFFSETFROM:+0530
+TZOFFSETTO:+0530
+TZNAME:GMT+5:30
+DTSTART:19700101T000000
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+DTSTART;TZID=Asia/Kolkata:20261018T190000
+DTEND;TZID=Asia/Kolkata:20261018T230000
+DTSTAMP:20261017T092414Z
+ORGANIZER;CN=Robocek GCEK:mailto:robocek@gcek.ac.in
+UID:c8s32dhk68q3cb9p65i3ib9k6gpj6bb1chh3cb9kcgsj8d9pc5im6dho6o@google.com
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=
+ TRUE;CN=23b472@gcek.ac.in;X-NUM-GUESTS=0:mailto:23b472@gcek.ac.in
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=
+ TRUE;CN=adithyarajkk4804@gmail.com;X-NUM-GUESTS=0:mailto:adithyarajkk4804@g
+ mail.com
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=
+ TRUE;CN=alexkjoseph987@gmail.com;X-NUM-GUESTS=0:mailto:alexkjoseph987@gmail
+ .com
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=
+ TRUE;CN=gopikape01@gmail.com;X-NUM-GUESTS=0:mailto:gopikape01@gmail.com
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=
+ TRUE;CN=opharikesh2005@gmail.com;X-NUM-GUESTS=0:mailto:opharikesh2005@gmail
+ .com
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED;RSVP=TRUE
+ ;CN=Robocek GCEK;X-NUM-GUESTS=0:mailto:robocek@gcek.ac.in
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=
+ TRUE;CN=vismayasatheesan163@gmail.com;X-NUM-GUESTS=0:mailto:vismayasatheesa
+ n163@gmail.com
+X-GOOGLE-CONFERENCE:https://meet.google.com/pzq-kkoh-ydx
+X-MICROSOFT-CDO-OWNERAPPTID:542450731
+CREATED:20261017T073511Z
+DESCRIPTION:-::~:~::~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~
+ :~:~:~:~:~:~:~:~::~:~::-\nJoin with Google Meet: https://meet.google.com/pz
+ q-kkoh-ydx\nOr dial: (US) +1 559-856-2884 PIN: 388775879#\n\nLearn more abo
+ ut Meet at: https://support.google.com/a/users/answer/9282720\n\nPlease do 
+ not edit this section.\n-::~:~::~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~
+ :~:~:~:~:~:~:~:~:~:~:~:~:~:~::~:~::-
+LAST-MODIFIED:20261017T092409Z
+LOCATION:https://meet.google.com/pzq-kkoh-ydx
+SEQUENCE:0
+STATUS:CONFIRMED
+SUMMARY:ROBOTIC SYSTEM DESIGN: Basics to CAD modeling and FEA optimization
+TRANSP:OPAQUE
+END:VEVENT
+END:VCALENDAR
