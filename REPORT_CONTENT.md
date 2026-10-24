@@ -230,6 +230,110 @@ The system consists of three main components:
 
 ---
 
+### 4.4 Estimation Algorithms
+
+#### Algorithm 1: SOC Ground-Truth Generation from NASA Data
+
+SOC labels are generated separately for every discharge cycle using coulomb counting. The measured NASA discharge current is negative, so its magnitude is integrated using trapezoidal integration.
+
+For samples $k-1$ and $k$:
+
+$$
+\Delta Q_k = \frac{|I_{k-1}| + |I_k|}{2}\frac{t_k-t_{k-1}}{3600}
+$$
+
+where $\Delta Q_k$ is in Ah. The cumulative discharged charge and SOC are:
+
+$$
+Q_k = \sum_{j=1}^{k}\Delta Q_j, \qquad
+SOC_k = 100\left(1-\frac{Q_k}{Q_{cycle}}\right)
+$$
+
+The result is clipped to 0--100%. Samples after the first SOC=0 crossing are removed because they represent rest-voltage recovery rather than further discharge. This SOC is the training label and is not available to the deployed system.
+
+#### Algorithm 2: SOC Estimation Model
+
+The SOC models use a 12-sample temporal window containing voltage, current, and temperature. With the NASA data resampled at 10 seconds, this represents approximately 120 seconds of history.
+
+1. Group samples by battery and discharge cycle, then sort each group by time.
+2. Create overlapping windows $[V,I,T]_{k-12:k}$ and assign the SOC at sample $k$ as the target.
+3. Normalize each channel using statistics calculated from training batteries only.
+4. Train and compare Random Forest, MLP, and LSTM regressors.
+5. Select the model using MAE, RMSE, and $R^2$ on batteries excluded from training.
+
+The Random Forest uses five statistics for each channel: mean, minimum, maximum, latest value, and latest-minus-first value. The MLP receives the flattened normalized window, while the LSTM receives the complete normalized sequence. The current comparative result is Random Forest with MAE 3.59% and $R^2=0.966$.
+
+#### Algorithm 3: SOH Label Generation
+
+SOH is defined from discharge capacity relative to a robust rated-capacity estimate for the same battery:
+
+$$
+SOH_{b,c}=\frac{Q_{b,c}}{Q_{rated,b}}
+$$
+
+Here, $Q_{b,c}$ is the measured capacity of battery $b$ in cycle $c$, and $Q_{rated,b}$ is the 95th percentile of valid cycle capacities for that battery. This avoids invalid SOH values caused by an anomalous first cycle. Near-zero-capacity cycles and cycles belonging to a different shallow-discharge protocol ($SOH<0.3$) are excluded.
+
+#### Algorithm 4: SOH Prediction
+
+SOH is predicted at cycle level rather than at every sensor sample.
+
+1. Read the cleaned cycle-summary table and sort each battery by cycle number.
+2. Construct features from information available up to the current cycle: cycle number, capacity history, capacity change/loss, percentage change, rolling capacity mean and standard deviation, degradation rate, voltage summary, and temperature summary.
+3. Split complete batteries into training and test groups using `GroupShuffleSplit`; no cycle from a test battery is used for training.
+4. Fit the scaler on training batteries only and apply it to both sets.
+5. Train the regression model and evaluate predicted SOH using MAE, RMSE, and $R^2$.
+
+The impedance-enhanced experiment optionally adds NASA's $R_e$ and $R_{ct}$ values. These are attached to the discharge cycle from the following impedance record. Missing early impedance measurements remain missing and are not fabricated.
+
+#### Algorithm 5: ESP32-S3 Hardware Measurement and Monitoring
+
+The current firmware implements the sensing and baseline-estimation layer. It does not yet execute the NASA-trained SOC/SOH neural network on the ESP32-S3.
+
+1. Configure the 12-bit ADC with 11 dB attenuation and initialize the INA226 on I2C using SDA GPIO 8 and SCL GPIO 9.
+2. Read each of the three voltage-divider taps 20 times and average the raw ADC values.
+3. Convert each average to a tap voltage using its fitted quadratic calibration equation, $V_{tap}=a(raw)^2+b(raw)+c$.
+4. Calculate individual cell voltages from cumulative taps: $V_1=V_{tap1}$, $V_2=V_{tap2}-V_{tap1}$, and $V_3=V_{tap3}-V_{tap2}$.
+5. Read each NTC divider 20 times. Calculate resistance using $R_{NTC}=R_{fixed}V_{NTC}/(V_{supply}-V_{NTC})$, then calculate temperature with:
+
+$$
+T_K=\left[\frac{1}{T_{25}}+\frac{1}{B}\ln\left(\frac{R_{NTC}}{R_{25}}\right)\right]^{-1}
+$$
+
+6. Read load current, bus voltage, shunt voltage, and power from the INA226. Treat the current magnitude as load current and classify values below 5 mA as idle.
+7. Estimate per-cell baseline SOC from voltage:
+
+$$
+SOC_i=100\frac{V_i-3.0}{4.2-3.0}
+$$
+
+Clamp values below 3.0 V to 0% and values above 4.2 V to 100%.
+
+8. Compute pack SOC as the average of the three cell SOC values and cell imbalance as $(V_{max}-V_{min})\times1000$ mV.
+9. Integrate load current at every sampling interval:
+
+$$
+Q_{mAh} \mathrel{+}= I_{mA}\frac{\Delta t}{3600}
+$$
+
+10. Output timestamp, pack and cell voltages, current, temperature, SOC, imbalance, and accumulated capacity as human-readable text or NASA-compatible CSV.
+
+This hardware algorithm provides real-time monitoring and creates a compatible dataset for later model validation. Tap1 and especially Tap3 calibration should be repeated before safety-critical use because the current documentation reports larger residual error on those channels.
+
+#### Algorithm 6: Complete Data Flow
+
+```text
+Battery pack -> voltage dividers and ADC calibration -> cell and pack voltage
+			 -> INA226 -> current, power, bus voltage, capacity integration
+			 -> NTC dividers -> cell temperatures
+			 -> ESP32-S3 baseline SOC and imbalance/status checks
+			 -> CSV/Wi-Fi/mobile dashboard
+
+NASA MAT files -> extraction and coulomb-counted SOC labels
+			   -> cleaning and battery-level split
+			   -> SOC/SOH model training and evaluation
+			   -> future quantization/export for ESP32-S3 inference
+```
+
 ## Chapter 5: Results and Discussion
 
 ### 5.1 Model Performance
