@@ -1,0 +1,15 @@
+\beamer@sectionintoc {1}{Introduction}{3}{0}{1}
+\beamer@sectionintoc {2}{Problem Statement}{4}{0}{2}
+\beamer@sectionintoc {3}{Objectives}{5}{0}{3}
+\beamer@sectionintoc {4}{Literature Review}{6}{0}{4}
+\beamer@sectionintoc {5}{Proposed Methodology}{10}{0}{5}
+\beamer@sectionintoc {6}{Block Diagram}{11}{0}{6}
+\beamer@sectionintoc {7}{Design Formulation and Progress}{13}{0}{7}
+\beamer@sectionintoc {8}{Results and Discussion}{15}{0}{8}
+\beamer@sectionintoc {9}{Individual Contributions and Teamwork}{24}{0}{9}
+\beamer@sectionintoc {10}{Work Plan}{25}{0}{10}
+\beamer@sectionintoc {11}{Project Budget}{27}{0}{11}
+\beamer@sectionintoc {12}{Future Activities}{28}{0}{12}
+\beamer@sectionintoc {13}{Project Summary}{29}{0}{13}
+\beamer@sectionintoc {14}{References}{30}{0}{14}
+\beamer@sectionintoc {15}{Appendix A: NBA Accreditation Criteria}{32}{0}{15}
